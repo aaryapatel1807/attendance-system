@@ -63,6 +63,26 @@ export interface VerifyFaceResult {
   reason?: "no_face" | "no_match" | "not_you";
 }
 
+export interface PortalClass {
+  id: string;
+  name: string;
+  subject: string;
+  teacherName?: string | null;
+  schedule?: string;
+}
+
+export interface EnrollFaceResult {
+  success: boolean;
+  faces_found: number;
+}
+
+export interface MarkAttendanceResult {
+  marked: boolean;
+  confidence?: number | null;
+  subject?: string;
+  reason?: "no_face" | "no_match" | "not_you";
+}
+
 export interface Teacher {
   id: string;
   name: string;

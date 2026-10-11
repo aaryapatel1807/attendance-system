@@ -254,8 +254,8 @@ def register_face(req: RegisterRequest,
     ensure_ready_and_authorized(x_ai_key)
     if not req.student_id:
         raise HTTPException(status_code=422, detail="student_id is required")
-    if not isinstance(req.images, list) or not (1 <= len(req.images) <= 5):
-        raise HTTPException(status_code=422, detail="images must be a list of 1-5 data-URLs")
+    if not isinstance(req.images, list) or not (1 <= len(req.images) <= 50):
+        raise HTTPException(status_code=422, detail="images must be a list of 1-50 data-URLs")
 
     embeddings = []
     faces_found = 0

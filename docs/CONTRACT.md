@@ -14,7 +14,7 @@ are defaults (override via env).
 - Express errors: `{ "error": "human readable message" }` with proper status codes.
 - JWT: `Authorization: Bearer <token>`. Token payload: `{ sub: userId, role }`.
 - Image transfer: base64 **data-URL** strings (`data:image/jpeg;base64,...`),
-  max 5 images per registration call. AI service strips the prefix.
+  up to 50 images per registration call (camera enrollment). AI service strips the prefix.
 - Pagination: `?page=1&limit=20` on list endpoints → `{ data: [...], total, page, pages }`.
 - Env: `JWT_SECRET`, `MONGO_URI`, `AI_SERVICE_URL` (default `http://localhost:8000`),
   `AI_SERVICE_KEY` (shared secret header `X-AI-Key` on server→ai-service calls).
@@ -49,6 +49,9 @@ Student identity always comes from the JWT `sub` — never from a query param.
 | GET | `/api/portal/me` | `{ id, rollNumber, name, email, phone, department, semester, photo, faceRegistered }` (never the password hash) |
 | GET | `/api/portal/attendance` | `{ percent, present, absent, total, history: [{ date, subject, status, time }] }` |
 | POST | `/api/portal/verify-face` | body `{ image: "data-url" }` → `{ verified: true, confidence, student: { name, rollNumber, photo } }` when the top AI match is the logged-in student; otherwise `{ verified: false, reason }` with `reason` = `no_face` (no face detected), `no_match` (face matches nobody enrolled), or `not_you` (face matches a different student — no info about them is revealed). Verification only: never marks attendance. AI down → `502 { error: "AI service unavailable" }`. |
+| POST | `/api/portal/enroll-face` | body `{ images: ["data-url", ...] }` (1–50 camera samples). Forwards to AI `/register-face` with `student_id` = the student's rollNumber; on success sets `faceRegistered: true`. Returns `{ success: true, faces_found }`. |
+| GET | `/api/portal/classes` | `{ data: [{ id, name, subject, teacherName, schedule }] }` — classes matching the student's own department + semester. |
+| POST | `/api/portal/mark-attendance` | body `{ image: "data-url", classId }`. The class must belong to the student's department + semester (else 403). The AI top match's `student_id` must equal the student's rollNumber. On match → upserts a present Attendance record for today and returns `{ marked: true, confidence, subject }`. Otherwise `{ marked: false, reason }` (`no_face` / `no_match` / `not_you`). |
 
 ## 2. Students (Express, auth: admin or teacher; write ops: admin)
 
@@ -99,7 +102,7 @@ POST /detect
     # bbox in pixels relative to the input image
 
 POST /register-face
-  body: { "student_id": "CS2024001", "images": ["data-url", ...] }  # 1..5 images
+  body: { "student_id": "CS2024001", "images": ["data-url", ...] }  # 1..50 images
   → { "success": true, "faces_found": 3, "embedding_dim": 512 }
   # stores mean embedding for student_id; each image must contain ≥1 face
 
@@ -167,7 +170,9 @@ attendance history. Must be idempotent.
 ## Frontend pages (client implements ALL)
 
 `/login` (Staff / Student tabs), `/` (dashboard — staff only),
-`/portal` (student portal — role `student` only),
+`/portal` (student portal — role `student` only; sections: Today's Attendance
+one-tap camera marking, Register My Face 40-sample camera enrollment,
+Verify My Face, stats, history),
 `/attendance` (camera hero),
 `/students`, `/students/:id`, `/students/register-face` (admin),
 `/classes`, `/reports`, `/settings`.

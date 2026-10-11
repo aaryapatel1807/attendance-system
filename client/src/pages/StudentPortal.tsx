@@ -11,12 +11,22 @@ import {
   RotateCcw,
   ScanFace,
   ShieldCheck,
+  UserPlus,
+  Video,
+  X,
   XCircle,
 } from "lucide-react";
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { useAppSelector } from "../store";
 import { http } from "../api/http";
-import type { PortalAttendance, PortalProfile, VerifyFaceResult } from "../types";
+import type {
+  EnrollFaceResult,
+  MarkAttendanceResult,
+  PortalAttendance,
+  PortalClass,
+  PortalProfile,
+  VerifyFaceResult,
+} from "../types";
 import {
   Avatar,
   Badge,
@@ -250,6 +260,580 @@ function VerifyFaceSection({ faceRegistered }: { faceRegistered: boolean }) {
   );
 }
 
+/** Capture the webcam frame downscaled to ~480px JPEG to keep uploads small. */
+function captureSample(webcamRef: React.RefObject<Webcam | null>): string | null {
+  const video = webcamRef.current?.video as HTMLVideoElement | undefined;
+  if (!video || video.readyState < 2 || video.videoWidth === 0) return null;
+  const targetW = 480;
+  const scale = targetW / video.videoWidth;
+  const canvas = document.createElement("canvas");
+  canvas.width = targetW;
+  canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.7);
+}
+
+const ENROLL_SAMPLES = 40;
+const ENROLL_INTERVAL_MS = 600;
+const ENROLL_POSES = [
+  "Look straight ahead",
+  "Turn slightly left",
+  "Turn slightly right",
+  "Tilt your chin up a little",
+  "Smile",
+];
+
+type EnrollPhase = "idle" | "ready" | "capturing" | "uploading" | "done" | "error";
+
+/** Camera-guided face enrollment: 40 auto-captured samples with pose prompts. */
+function EnrollFaceSection({
+  faceRegistered,
+  onEnrolled,
+}: {
+  faceRegistered: boolean;
+  onEnrolled: () => void;
+}) {
+  const webcamRef = useRef<Webcam>(null);
+  const samplesRef = useRef<string[]>([]);
+  const [open, setOpen] = useState(false);
+  const [camError, setCamError] = useState(false);
+  const [phase, setPhase] = useState<EnrollPhase>("idle");
+  const [count, setCount] = useState(0);
+  const [countdown, setCountdown] = useState(3);
+  const [error, setError] = useState<string | null>(null);
+
+  const reset = () => {
+    samplesRef.current = [];
+    setCount(0);
+    setPhase("idle");
+    setError(null);
+    setCamError(false);
+  };
+  const close = () => {
+    reset();
+    setOpen(false);
+  };
+
+  const uploadSamples = async () => {
+    setPhase("uploading");
+    try {
+      const r = await http.post<EnrollFaceResult>("/portal/enroll-face", {
+        images: samplesRef.current,
+      });
+      if (!r.data?.success) throw new Error("Enrollment failed. Please try again.");
+      setPhase("done");
+      onEnrolled();
+    } catch (e: unknown) {
+      const msg =
+        (e as { response?: { data?: { error?: string } } })?.response?.data?.error ||
+        "Upload failed. Please try again.";
+      setError(msg);
+      setPhase("error");
+    }
+  };
+
+  // Countdown 3-2-1 before capture starts
+  useEffect(() => {
+    if (phase !== "ready") return;
+    if (countdown <= 0) {
+      setPhase("capturing");
+      return;
+    }
+    const t = window.setTimeout(() => setCountdown((c) => c - 1), 1000);
+    return () => window.clearTimeout(t);
+  }, [phase, countdown]);
+
+  // Auto-capture loop
+  useEffect(() => {
+    if (phase !== "capturing") return;
+    const id = window.setInterval(() => {
+      const shot = captureSample(webcamRef);
+      if (!shot) return; // missed frame — don't count it
+      samplesRef.current.push(shot);
+      setCount(samplesRef.current.length);
+      if (samplesRef.current.length >= ENROLL_SAMPLES) {
+        window.clearInterval(id);
+        void uploadSamples();
+      }
+    }, ENROLL_INTERVAL_MS);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase]);
+
+  const pose = ENROLL_POSES[Math.floor(count / 8) % ENROLL_POSES.length];
+
+  return (
+    <>
+      <motion.div
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, delay: 0.04 }}
+      >
+        <Card className="mt-5 p-7">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-4">
+              <span className="grad-brand flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl text-white">
+                <UserPlus size={24} />
+              </span>
+              <div>
+                <h3 className="text-[18px] font-bold text-gray-900 dark:text-white">
+                  {faceRegistered ? "Face Enrollment" : "Register My Face"}
+                </h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400">
+                  {faceRegistered
+                    ? "Your face is enrolled. Re-register anytime to improve recognition."
+                    : "Enroll with your camera — 40 quick samples with guided poses."}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <Badge tone={faceRegistered ? "success" : "warning"}>
+                {faceRegistered ? "Face registered" : "Not enrolled"}
+              </Badge>
+              <PrimaryButton onClick={() => { setOpen(true); setCountdown(3); }}>
+                <Video size={18} /> {faceRegistered ? "Re-register" : "Start enrollment"}
+              </PrimaryButton>
+            </div>
+          </div>
+        </Card>
+      </motion.div>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ scale: 0.94, y: 12 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.96, opacity: 0 }}
+              className="w-full max-w-xl overflow-hidden rounded-[24px] bg-white p-6 dark:bg-night-900"
+            >
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-extrabold text-gray-900 dark:text-white">
+                  Face enrollment
+                </h3>
+                <button
+                  onClick={close}
+                  className="rounded-xl p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-white/10"
+                  aria-label="Close"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div className="grad-border relative mt-4 overflow-hidden rounded-[20px] bg-black">
+                <div className="relative aspect-video w-full overflow-hidden rounded-[20px]">
+                  {!camError ? (
+                    <Webcam
+                      ref={webcamRef}
+                      audio={false}
+                      screenshotFormat="image/jpeg"
+                      videoConstraints={videoConstraints}
+                      className="webcam-mirror h-full w-full object-cover"
+                      onUserMedia={() => {
+                        if (phase === "idle") setPhase("ready");
+                      }}
+                      onUserMediaError={() => setCamError(true)}
+                    />
+                  ) : (
+                    <div className="flex h-full w-full flex-col items-center justify-center gap-3 bg-night-900 text-gray-400">
+                      <Camera size={40} className="text-gray-600" />
+                      <p className="max-w-[260px] text-center text-sm font-medium">
+                        Camera unavailable. Check your browser permissions and try again.
+                      </p>
+                    </div>
+                  )}
+                  {phase === "ready" && countdown > 0 && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                      <motion.span
+                        key={countdown}
+                        initial={{ scale: 0.6, opacity: 0 }}
+                        animate={{ scale: 1, opacity: 1 }}
+                        className="text-7xl font-extrabold text-white"
+                      >
+                        {countdown}
+                      </motion.span>
+                    </div>
+                  )}
+                  {phase === "capturing" && (
+                    <div className="scanline pointer-events-none absolute left-[6%] right-[6%] h-1 rounded-full bg-gradient-to-r from-transparent via-cyan-300 to-transparent shadow-[0_0_24px_4px_rgba(103,232,249,0.8)]" />
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-5 text-center">
+                {phase === "idle" && (
+                  <p className="text-sm text-gray-500 dark:text-gray-400">
+                    Allow camera access to begin. Stay still and follow the prompts.
+                  </p>
+                )}
+                {phase === "ready" && (
+                  <p className="text-sm font-semibold text-gray-700 dark:text-gray-200">
+                    Get ready — keep your face in the frame
+                  </p>
+                )}
+                {phase === "capturing" && (
+                  <>
+                    <p className="text-base font-extrabold text-gray-900 dark:text-white">{pose}</p>
+                    <div className="mx-auto mt-3 w-fit">
+                      <ProgressRing
+                        percent={(count / ENROLL_SAMPLES) * 100}
+                        size={110}
+                        label={`${count}/${ENROLL_SAMPLES}`}
+                        sublabel="samples"
+                      />
+                    </div>
+                    <p className="mt-2 text-xs text-gray-400">Capturing samples…</p>
+                  </>
+                )}
+                {phase === "uploading" && (
+                  <div className="flex items-center justify-center gap-2 text-sm font-semibold text-gray-700 dark:text-gray-200">
+                    <Loader2 size={18} className="animate-spin" /> Uploading {count} samples…
+                  </div>
+                )}
+                {phase === "done" && (
+                  <motion.div
+                    initial={{ scale: 0.9, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    className="py-2"
+                  >
+                    <motion.span
+                      initial={{ scale: 0 }}
+                      animate={{ scale: 1 }}
+                      transition={{ type: "spring", stiffness: 300, damping: 14 }}
+                      className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-green-500 text-white"
+                    >
+                      <CheckCircle2 size={32} />
+                    </motion.span>
+                    <p className="mt-3 text-lg font-extrabold text-green-700 dark:text-green-300">
+                      Face enrolled successfully
+                    </p>
+                    <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                      {count} samples saved. You can now mark attendance with your face.
+                    </p>
+                    <PrimaryButton className="mt-4" onClick={close}>
+                      Done
+                    </PrimaryButton>
+                  </motion.div>
+                )}
+                {phase === "error" && (
+                  <div className="py-2">
+                    <p className="rounded-2xl bg-red-50 px-5 py-4 text-sm font-medium text-red-700 dark:bg-red-500/10 dark:text-red-300">
+                      {error}
+                    </p>
+                    <GhostButton
+                      className="mt-4"
+                      onClick={() => { reset(); setCountdown(3); }}
+                    >
+                      <RotateCcw size={16} /> Try again
+                    </GhostButton>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
+  );
+}
+
+type MarkPhase = "idle" | "camera" | "sending" | "result";
+
+/** One-tap attendance: today's classes with a camera button each. */
+function TodayAttendanceSection({ onMarked }: { onMarked: () => void }) {
+  const webcamRef = useRef<Webcam>(null);
+  const [classes, setClasses] = useState<PortalClass[] | null>(null);
+  const [todayStatus, setTodayStatus] = useState<Record<string, "present" | "absent">>({});
+  const [activeClass, setActiveClass] = useState<PortalClass | null>(null);
+  const [phase, setPhase] = useState<MarkPhase>("idle");
+  const [camError, setCamError] = useState(false);
+  const [result, setResult] = useState<MarkAttendanceResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const todayStr = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+      d.getDate()
+    ).padStart(2, "0")}`;
+  };
+
+  const load = async () => {
+    try {
+      const [cRes, aRes] = await Promise.all([
+        http.get<{ data: PortalClass[] }>("/portal/classes"),
+        http.get<PortalAttendance>("/portal/attendance"),
+      ]);
+      const cls = cRes.data.data ?? [];
+      setClasses(cls);
+      const today = todayStr();
+      const status: Record<string, "present" | "absent"> = {};
+      for (const c of cls) {
+        const entry = (aRes.data.history ?? []).find(
+          (h) => h.date === today && h.subject === c.subject
+        );
+        status[c.id] = entry ? entry.status : "absent";
+      }
+      setTodayStatus(status);
+    } catch {
+      setClasses([]);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const openFor = (c: PortalClass) => {
+    setActiveClass(c);
+    setResult(null);
+    setError(null);
+    setCamError(false);
+    setPhase("camera");
+  };
+  const close = () => {
+    setActiveClass(null);
+    setResult(null);
+    setError(null);
+    setCamError(false);
+    setPhase("idle");
+  };
+
+  const mark = async () => {
+    const shot = captureSample(webcamRef);
+    if (!shot || !activeClass) {
+      setError("Couldn't capture a photo. Please try again.");
+      return;
+    }
+    setPhase("sending");
+    setError(null);
+    try {
+      const r = await http.post<MarkAttendanceResult>("/portal/mark-attendance", {
+        image: shot,
+        classId: activeClass.id,
+      });
+      setResult(r.data);
+      setPhase("result");
+      if (r.data.marked) {
+        await load();
+        onMarked();
+      }
+    } catch (e: unknown) {
+      const msg =
+        (e as { response?: { data?: { error?: string } } })?.response?.data?.error ||
+        "Couldn't mark attendance. Please try again.";
+      setError(msg);
+      setPhase("result");
+    }
+  };
+
+  return (
+    <>
+      <motion.div
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4 }}
+      >
+        <Card className="mt-5 p-7">
+          <div className="flex items-center gap-4">
+            <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white">
+              <Camera size={24} />
+            </span>
+            <div>
+              <h3 className="text-[18px] font-bold text-gray-900 dark:text-white">
+                Today's Attendance
+              </h3>
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                Tap the camera on a class and look at it — one tap, you're marked.
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-5 space-y-3">
+            {classes === null && <Skeleton className="h-20 !rounded-2xl" />}
+            {classes !== null && classes.length === 0 && (
+              <EmptyState
+                icon={CalendarDays}
+                title="No classes found"
+                message="No classes match your department and semester yet."
+              />
+            )}
+            {(classes ?? []).map((c) => {
+              const st = todayStatus[c.id] ?? "absent";
+              const done = st === "present";
+              return (
+                <div
+                  key={c.id}
+                  className="flex items-center justify-between gap-4 rounded-2xl bg-gray-50 px-5 py-4 dark:bg-white/[0.04]"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-[15px] font-bold text-gray-900 dark:text-white">
+                      {c.subject}
+                    </p>
+                    <p className="truncate text-xs text-gray-400">
+                      {[c.name, c.teacherName, c.schedule].filter(Boolean).join(" · ")}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-3">
+                    <Badge tone={done ? "success" : "warning"}>
+                      {done ? "Present today" : "Not marked"}
+                    </Badge>
+                    <button
+                      onClick={() => openFor(c)}
+                      className={cn(
+                        "flex h-11 w-11 items-center justify-center rounded-2xl text-white transition-transform hover:scale-105 active:scale-95",
+                        done ? "bg-gray-300 dark:bg-white/10" : "grad-brand"
+                      )}
+                      title={done ? "Mark again" : "Mark attendance"}
+                      aria-label={`Mark attendance for ${c.subject}`}
+                    >
+                      <Camera size={20} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      </motion.div>
+
+      <AnimatePresence>
+        {activeClass && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ scale: 0.94, y: 12 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.96, opacity: 0 }}
+              className="w-full max-w-xl overflow-hidden rounded-[24px] bg-white p-6 dark:bg-night-900"
+            >
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-extrabold text-gray-900 dark:text-white">
+                  Mark attendance · {activeClass.subject}
+                </h3>
+                <button
+                  onClick={close}
+                  className="rounded-xl p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-700 dark:hover:bg-white/10"
+                  aria-label="Close"
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              {phase !== "result" ? (
+                <>
+                  <div className="grad-border relative mt-4 overflow-hidden rounded-[20px] bg-black">
+                    <div className="relative aspect-video w-full overflow-hidden rounded-[20px]">
+                      {!camError ? (
+                        <Webcam
+                          ref={webcamRef}
+                          audio={false}
+                          screenshotFormat="image/jpeg"
+                          videoConstraints={videoConstraints}
+                          className="webcam-mirror h-full w-full object-cover"
+                          onUserMediaError={() => setCamError(true)}
+                        />
+                      ) : (
+                        <div className="flex h-full w-full flex-col items-center justify-center gap-3 bg-night-900 text-gray-400">
+                          <Camera size={40} className="text-gray-600" />
+                          <p className="max-w-[260px] text-center text-sm font-medium">
+                            Camera unavailable. Check your browser permissions and try again.
+                          </p>
+                        </div>
+                      )}
+                      {phase === "sending" && (
+                        <div className="scanline pointer-events-none absolute left-[6%] right-[6%] h-1 rounded-full bg-gradient-to-r from-transparent via-cyan-300 to-transparent shadow-[0_0_24px_4px_rgba(103,232,249,0.8)]" />
+                      )}
+                    </div>
+                  </div>
+                  <div className="mt-4 flex justify-center">
+                    {phase === "sending" ? (
+                      <PrimaryButton disabled>
+                        <Loader2 size={18} className="animate-spin" /> Matching your face…
+                      </PrimaryButton>
+                    ) : (
+                      <PrimaryButton onClick={mark} disabled={camError}>
+                        <ScanFace size={18} /> Mark me present
+                      </PrimaryButton>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="py-4 text-center">
+                  {error ? (
+                    <>
+                      <p className="rounded-2xl bg-red-50 px-5 py-4 text-sm font-medium text-red-700 dark:bg-red-500/10 dark:text-red-300">
+                        {error}
+                      </p>
+                      <GhostButton className="mt-4" onClick={() => { setError(null); setPhase("camera"); }}>
+                        <RotateCcw size={16} /> Try again
+                      </GhostButton>
+                    </>
+                  ) : result?.marked ? (
+                    <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}>
+                      <motion.span
+                        initial={{ scale: 0 }}
+                        animate={{ scale: 1 }}
+                        transition={{ type: "spring", stiffness: 300, damping: 14 }}
+                        className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-green-500 text-white"
+                      >
+                        <CheckCircle2 size={32} />
+                      </motion.span>
+                      <p className="mt-3 text-lg font-extrabold text-green-700 dark:text-green-300">
+                        You're marked present for {result.subject}
+                      </p>
+                      {typeof result.confidence === "number" && (
+                        <div className="mt-3">
+                          <Badge tone="success">
+                            {(result.confidence * 100).toFixed(1)}% confidence
+                          </Badge>
+                        </div>
+                      )}
+                      <PrimaryButton className="mt-4" onClick={close}>
+                        Done
+                      </PrimaryButton>
+                    </motion.div>
+                  ) : (
+                    <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}>
+                      <motion.span
+                        initial={{ scale: 0 }}
+                        animate={{ scale: 1 }}
+                        transition={{ type: "spring", stiffness: 300, damping: 14 }}
+                        className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-amber-500 text-white"
+                      >
+                        <AlertTriangle size={30} />
+                      </motion.span>
+                      <p className="mt-3 text-lg font-extrabold text-amber-700 dark:text-amber-300">
+                        Face is not matched. Try it again.
+                      </p>
+                      <p className="mx-auto mt-1 max-w-sm text-sm text-gray-500 dark:text-gray-400">
+                        Make sure you're well lit, facing the camera, and your face is enrolled.
+                      </p>
+                      <GhostButton className="mt-4" onClick={() => { setResult(null); setPhase("camera"); }}>
+                        <RotateCcw size={16} /> Try again
+                      </GhostButton>
+                    </motion.div>
+                  )}
+                </div>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </>
+  );
+}
+
 export default function StudentPortal() {
   const { user } = useAppSelector((s) => s.auth);
   const [profile, setProfile] = useState<PortalProfile | null>(null);
@@ -257,16 +841,19 @@ export default function StudentPortal() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    void refresh();
+  }, []);
+
+  const refresh = async () => {
     setLoading(true);
-    Promise.all([
+    const [p, a] = await Promise.all([
       http.get<PortalProfile>("/portal/me").then((r) => r.data).catch(() => null),
       http.get<PortalAttendance>("/portal/attendance").then((r) => r.data).catch(() => null),
-    ]).then(([p, a]) => {
-      setProfile(p);
-      setAttendance(a);
-      setLoading(false);
-    });
-  }, []);
+    ]);
+    setProfile(p);
+    setAttendance(a);
+    setLoading(false);
+  };
 
   const firstName = (profile?.name ?? user?.name ?? "Student").split(" ")[0];
   const hour = new Date().getHours();
@@ -291,6 +878,15 @@ export default function StudentPortal() {
         </div>
       ) : (
         <>
+          {/* Today's classes — one-tap face attendance */}
+          <TodayAttendanceSection onMarked={refresh} />
+
+          {/* Camera-guided face enrollment */}
+          <EnrollFaceSection
+            faceRegistered={!!profile?.faceRegistered}
+            onEnrolled={refresh}
+          />
+
           {/* Stat cards */}
           <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
             <StatCard title="Attendance" value={attendance?.percent ?? 0} decimals={1} suffix="%" icon={GraduationCap} iconBg="grad-brand" delay={0.02} />
