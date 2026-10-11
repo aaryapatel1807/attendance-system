@@ -1,0 +1,9 @@
+# AI service — face detection (MediaPipe) + face embeddings (DeepFace Facenet512)
+fastapi
+uvicorn[standard]
+mediapipe
+deepface
+opencv-python-headless
+numpy
+pillow
+python-multipart
