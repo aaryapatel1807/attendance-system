@@ -94,7 +94,7 @@ CRUD: `GET /api/teachers`, `POST /api/teachers` `{name,email,password,department
 
 ```
 GET  /health
-  → { "status": "ok", "model": "mediapipe+facenet", "version": "1.0.0" }
+  → { "status": "ok", "model": "insightface-buffalo_l(arcface)", "version": "2.0.0" }
 
 POST /detect
   body: { "image": "data-url" }

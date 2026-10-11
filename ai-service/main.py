@@ -1,19 +1,19 @@
 """
 Face Recognition Attendance System — AI service (FastAPI).
 
-- Face detection: MediaPipe Face Detection (short-range model, blaze_face_short_range),
-  pretrained, via the tasks-vision API.
-- Face embeddings: DeepFace `Facenet512` (pretrained), enforce_detection=False
-  because faces are already cropped with MediaPipe.
-- Matching: cosine similarity, match iff similarity >= 0.55.
+- Face detection + embeddings: InsightFace `buffalo_l` bundle (pretrained),
+  SCRFD-10G face detector + ArcFace R100 recognition model (512-d embeddings).
+- Matching: cosine similarity on L2-normalized embeddings,
+  match iff similarity >= MATCH_THRESHOLD.
 - Registered embeddings are persisted in local SQLite (encodings.db).
 
 Contract: GET /health, POST /detect, POST /register-face, POST /recognize.
 All POST endpoints require header `X-AI-Key` == env AI_SERVICE_KEY
 (default "dev-key-change-me"); wrong/missing key -> 401.
 
-Models are lazy-loaded in the startup event. If loading fails, the process
-never crashes: /health reports "degraded" and POST endpoints return 503.
+Models are lazy-loaded in the startup event (~300MB download on first boot).
+If loading fails, the process never crashes: /health reports "degraded"
+and POST endpoints return 503.
 """
 
 import base64
@@ -30,9 +30,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from PIL import Image
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "2.0.0"
 MATCH_THRESHOLD = 0.55
 EMBEDDING_DIM = 512
+MIN_DET_SCORE = 0.5
 
 AI_SERVICE_KEY = os.environ.get("AI_SERVICE_KEY", "dev-key-change-me")
 DB_PATH = os.environ.get(
@@ -42,9 +43,8 @@ DB_PATH = os.environ.get(
 # ---------------------------------------------------------------- state ----
 _models_ready = False
 _load_error = None
-_face_detector = None  # MediaPipe FaceDetection instance
-_DeepFace = None       # DeepFace module (models downloaded on build_model)
-_mp_lock = threading.Lock()
+_face_app = None  # InsightFace FaceAnalysis instance
+_fa_lock = threading.Lock()
 
 # ---------------------------------------------------------------- app ------
 app = FastAPI(title="face-attendance-ai", version=APP_VERSION)
@@ -77,60 +77,22 @@ class RecognizeRequest(BaseModel):
 
 
 # ------------------------------------------------------------ startup ------
-MP_MODEL_URL = (
-    "https://storage.googleapis.com/mediapipe-models/face_detector/"
-    "blaze_face_short_range/float16/1/blaze_face_short_range.tflite"
-)
-MP_MODEL_PATH = os.environ.get(
-    "MP_FACE_MODEL",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "models",
-                 "blaze_face_short_range.tflite"),
-)
-
-
-def download_mp_model(path: str):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    import urllib.request
-
-    req = urllib.request.Request(MP_MODEL_URL, headers={"User-Agent": "face-attendance-ai/1.0"})
-    with urllib.request.urlopen(req, timeout=120) as resp, open(path, "wb") as f:
-        while True:
-            chunk = resp.read(1 << 20)
-            if not chunk:
-                break
-            f.write(chunk)
-
-
 @app.on_event("startup")
 def load_models():
-    global _face_detector, _DeepFace, _models_ready, _load_error
+    global _face_app, _models_ready, _load_error
     try:
-        # Tasks API (mediapipe >= 0.10.9 dropped the legacy solutions API);
-        # still the pretrained MediaPipe short-range face detection model.
-        from mediapipe.tasks import python as mp_python
-        from mediapipe.tasks.python import vision
+        from insightface.app import FaceAnalysis
 
-        if not os.path.exists(MP_MODEL_PATH):
-            download_mp_model(MP_MODEL_PATH)
-        base = mp_python.BaseOptions(model_asset_path=MP_MODEL_PATH)
-        options = vision.FaceDetectorOptions(
-            base_options=base,
-            running_mode=vision.RunningMode.IMAGE,
-            min_detection_confidence=0.5,
+        # buffalo_l = SCRFD-10G detector + ArcFace R100 (pretrained).
+        # Models auto-download (~300MB) on first prepare().
+        _face_app = FaceAnalysis(
+            name="buffalo_l",
+            root=os.path.join(os.path.expanduser("~"), ".insightface"),
         )
-        _face_detector = vision.FaceDetector.create_from_options(options)
+        _face_app.prepare(ctx_id=-1, det_size=(640, 640))  # CPU
     except Exception as e:  # never crash the process
-        _load_error = f"MediaPipe face detection failed to load: {e}"
-        return
-    try:
-        from deepface import DeepFace as _DF
-
-        _DeepFace = _DF
-        # Downloads Facenet512 weights on first run (~90MB).
-        _DeepFace.build_model("Facenet512")
-    except Exception as e:
-        _face_detector = None
-        _load_error = f"DeepFace Facenet512 failed to load: {e}"
+        _face_app = None
+        _load_error = f"InsightFace failed to load: {e}"
         return
     _models_ready = True
 
@@ -147,7 +109,7 @@ def ensure_ready_and_authorized(x_ai_key):
 
 # ------------------------------------------------------------ helpers ------
 def decode_data_url(data_url: str) -> np.ndarray:
-    """Strip base64 data-URL prefix, decode to RGB numpy array."""
+    """Strip base64 data-URL prefix, decode to BGR numpy array (InsightFace format)."""
     payload = data_url
     if data_url.startswith("data:") and "," in data_url:
         payload = data_url.split(",", 1)[1]
@@ -156,58 +118,40 @@ def decode_data_url(data_url: str) -> np.ndarray:
         img = Image.open(io.BytesIO(raw)).convert("RGB")
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Invalid image data: {e}")
-    return np.asarray(img)
+    rgb = np.asarray(img)
+    return rgb[:, :, ::-1].copy()  # RGB -> BGR, contiguous
 
 
-def detect_faces(img_rgb: np.ndarray) -> list:
-    """Return [{'bbox': [x,y,w,h] (px, relative to input), 'confidence': f}]."""
-    import mediapipe as mp
-
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(img_rgb))
-    with _mp_lock:  # FaceDetector is not documented as thread-safe
-        result = _face_detector.detect(mp_image)
-    faces = []
-    h, w = img_rgb.shape[:2]
-    for d in result.detections:
-        bb = d.bounding_box
-        x = max(0, int(bb.origin_x))
-        y = max(0, int(bb.origin_y))
-        bw = max(0, int(bb.width))
-        bh = max(0, int(bb.height))
-        x = min(x, w - 1)
-        y = min(y, h - 1)
-        bw = min(bw, w - x)
-        bh = min(bh, h - y)
-        score = float(d.categories[0].score) if d.categories else 0.0
-        faces.append({"bbox": [x, y, bw, bh], "confidence": round(score, 4)})
-    return faces
-
-
-def crop_face(img_rgb: np.ndarray, bbox: list, pad: float = 0.25) -> np.ndarray:
-    x, y, w, h = bbox
-    H, W = img_rgb.shape[:2]
-    x1 = max(0, int(x - w * pad))
-    y1 = max(0, int(y - h * pad))
-    x2 = min(W, int(x + w * (1 + pad)))
-    y2 = min(H, int(y + h * (1 + pad)))
-    return img_rgb[y1:y2, x1:x2]
-
-
-def embed_crop(crop_rgb: np.ndarray) -> np.ndarray:
-    if crop_rgb.size == 0:
-        raise HTTPException(status_code=422, detail="Face crop is empty")
-    # detector_backend="skip": faces are already cropped with MediaPipe, so
-    # DeepFace must not run (or download) its own face detector.
-    reps = _DeepFace.represent(img_path=crop_rgb, model_name="Facenet512",
-                               enforce_detection=False, detector_backend="skip")
-    return np.asarray(reps[0]["embedding"], dtype=np.float32)
+def analyze(img_bgr: np.ndarray) -> list:
+    """Run detection+embedding. Returns [{'bbox':[x,y,w,h], 'confidence':f,
+    'embedding': np.ndarray(512)}] with bboxes in pixels relative to input."""
+    with _fa_lock:  # FaceAnalysis is not documented as thread-safe
+        faces = _face_app.get(np.ascontiguousarray(img_bgr))
+    h, w = img_bgr.shape[:2]
+    out = []
+    for f in faces:
+        score = float(getattr(f, "det_score", 0.0) or 0.0)
+        if score < MIN_DET_SCORE:
+            continue
+        x1, y1, x2, y2 = (int(v) for v in f.bbox)
+        x1 = max(0, min(x1, w - 1))
+        y1 = max(0, min(y1, h - 1))
+        x2 = max(0, min(x2, w))
+        y2 = max(0, min(y2, h))
+        emb = np.asarray(f.normed_embedding, dtype=np.float32)
+        if emb.size != EMBEDDING_DIM:
+            continue
+        out.append({
+            "bbox": [x1, y1, max(0, x2 - x1), max(0, y2 - y1)],
+            "confidence": round(score, 4),
+            "embedding": emb,
+        })
+    return out
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    denom = float(np.linalg.norm(a) * np.linalg.norm(b))
-    if denom == 0.0:
-        return 0.0
-    return float(np.dot(a, b) / denom)
+    # Embeddings are L2-normalized -> cosine similarity is the dot product.
+    return float(np.dot(a, b))
 
 
 def get_db() -> sqlite3.Connection:
@@ -227,7 +171,9 @@ def load_all_embeddings() -> list:
     for sid, blob, dim in rows:
         emb = np.frombuffer(blob, dtype=np.float32)
         if emb.size == dim:
-            out.append((sid, emb))
+            # Re-normalize defensively (stored mean may drift from unit norm).
+            n = float(np.linalg.norm(emb))
+            out.append((sid, emb / n if n > 0 else emb))
     return out
 
 
@@ -236,7 +182,7 @@ def load_all_embeddings() -> list:
 def health():
     return {
         "status": "ok" if _models_ready else "degraded",
-        "model": "mediapipe+facenet",
+        "model": "insightface-buffalo_l(arcface)",
         "version": APP_VERSION,
     }
 
@@ -245,7 +191,8 @@ def health():
 def detect(req: DetectRequest, x_ai_key: str | None = Header(default=None, alias="X-AI-Key")):
     ensure_ready_and_authorized(x_ai_key)
     img = decode_data_url(req.image)
-    return {"faces": detect_faces(img)}
+    faces = analyze(img)
+    return {"faces": [{"bbox": f["bbox"], "confidence": f["confidence"]} for f in faces]}
 
 
 @app.post("/register-face")
@@ -261,17 +208,20 @@ def register_face(req: RegisterRequest,
     faces_found = 0
     for data_url in req.images:
         img = decode_data_url(data_url)
-        faces = detect_faces(img)
+        faces = analyze(img)
         if not faces:
             continue  # skip images with no face
         faces_found += 1
         largest = max(faces, key=lambda f: f["bbox"][2] * f["bbox"][3])
-        embeddings.append(embed_crop(crop_face(img, largest["bbox"])))
+        embeddings.append(largest["embedding"])
 
     if not embeddings:
         raise HTTPException(status_code=422, detail="No faces detected in any of the provided images")
 
     mean_emb = np.mean(np.stack(embeddings), axis=0).astype(np.float32)
+    n = float(np.linalg.norm(mean_emb))
+    if n > 0:
+        mean_emb = mean_emb / n
     conn = get_db()
     conn.execute(
         "INSERT OR REPLACE INTO embeddings (student_id, embedding, dim, updated_at)"
@@ -289,12 +239,12 @@ def recognize(req: RecognizeRequest,
               x_ai_key: str | None = Header(default=None, alias="X-AI-Key")):
     ensure_ready_and_authorized(x_ai_key)
     img = decode_data_url(req.image)
-    faces = detect_faces(img)
+    faces = analyze(img)
     stored = load_all_embeddings()
 
     matches, unknown = [], []
     for face in faces:
-        emb = embed_crop(crop_face(img, face["bbox"]))
+        emb = face["embedding"]
         best_sid, best_sim = None, -1.0
         for sid, ref in stored:
             sim = cosine_similarity(emb, ref)

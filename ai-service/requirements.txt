@@ -1,9 +1,11 @@
-# AI service — face detection (MediaPipe) + face embeddings (DeepFace Facenet512)
+# AI service — face detection + recognition via InsightFace (SCRFD + ArcFace, pretrained).
+# Install into a venv:  python -m venv .venv && .venv/bin/pip install -r requirements.txt
+# NOTE: insightface auto-downloads the buffalo_l model bundle (~325MB) on first boot.
+# Linux hosts also need libegl1 + libgles2 installed (see README).
 fastapi
 uvicorn[standard]
-mediapipe
-deepface
-opencv-python-headless
+insightface
+onnxruntime
 numpy
 pillow
 python-multipart
