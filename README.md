@@ -24,6 +24,12 @@ cd ai-service && python3 -m venv .venv && .venv/bin/pip install -r requirements.
 AI_SERVICE_KEY=change-me .venv/bin/uvicorn main:app --port 8000
 # first boot downloads ~90MB FaceNet weights + MediaPipe model (~40s), ~10s after
 
+# On Windows (PowerShell) use:
+#   cd ai-service
+#   py -m venv .venv
+#   .venv\Scripts\pip install -r requirements.txt
+#   $env:AI_SERVICE_KEY="change-me"; .venv\Scripts\uvicorn main:app --port 8000
+
 # 2 — API server
 cd server && npm install && cp .env.example .env   # set MONGO_URI, JWT_SECRET, AI_SERVICE_KEY
 npm run seed        # admin@college.edu/admin123, sharma@college.edu/teacher123
