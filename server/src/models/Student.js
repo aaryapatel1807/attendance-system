@@ -11,6 +11,8 @@ const studentSchema = new mongoose.Schema(
     semester: { type: Number, required: true, min: 1, max: 8 },
     photo: { type: String, default: "" },
     faceRegistered: { type: Boolean, default: false },
+    // Portal login credential (bcrypt hash). select:false so it never leaks in queries.
+    password: { type: String, select: false },
   },
   { timestamps: true }
 );

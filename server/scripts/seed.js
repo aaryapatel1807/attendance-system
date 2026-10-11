@@ -16,6 +16,14 @@ import { Student } from "../src/models/Student.js";
 import { Attendance } from "../src/models/Attendance.js";
 import { todayStr, daysAgo } from "../src/utils/helpers.js";
 
+// Default portal password for every seeded student (bcrypt-hashed once per seed run).
+const STUDENT_PASSWORD = "student123";
+let studentPasswordHash = null;
+async function getStudentPasswordHash() {
+  if (!studentPasswordHash) studentPasswordHash = await bcrypt.hash(STUDENT_PASSWORD, 10);
+  return studentPasswordHash;
+}
+
 // Deterministic PRNG so re-seeds produce identical history (idempotent).
 function mulberry32(seed) {
   return function () {
@@ -134,10 +142,11 @@ async function main() {
     classDocs.push(doc);
   }
 
-  // Students
+  // Students (everyone gets the default portal password)
   const studentDocs = [];
+  const pwHash = await getStudentPasswordHash();
   for (const s of buildStudents()) {
-    const doc = await upsert(Student, { rollNumber: s.rollNumber }, s);
+    const doc = await upsert(Student, { rollNumber: s.rollNumber }, { ...s, password: pwHash });
     studentDocs.push(doc);
   }
 
@@ -179,6 +188,7 @@ async function main() {
   console.log("  admin   → admin@college.edu  / admin123");
   console.log("  teacher → sharma@college.edu / teacher123  (Professor Sharma)");
   console.log("  teacher → meera@college.edu  / teacher123  (Dr. Meera Iyer)");
+  console.log(`  student → ${studentDocs[0].rollNumber} / ${STUDENT_PASSWORD}  (Student portal — ${studentDocs[0].name})`);
   process.exit(0);
 }
 

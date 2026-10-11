@@ -29,9 +29,25 @@ are defaults (override via env).
 | POST | `/api/auth/logout` | — | `{ ok: true }` |
 | GET | `/api/auth/me` | — (auth) | `{ user: { id, name, email, role } }` |
 
-Roles: `admin`, `teacher`. Seed users:
+Roles: `admin`, `teacher`, `student`. The `email` field on login accepts a
+roll number (e.g. `CS2024001`) for students. Student JWT payloads carry
+`{ sub: studentId, role: "student" }`. Students get **403** on every
+staff-only route (teachers, departments/classes writes, students CRUD,
+`/api/face/*`, `POST /api/attendance`, dashboard, reports).
+
+Seed users:
 - admin: `admin@college.edu` / `admin123`
 - teacher: `sharma@college.edu` / `teacher123` (name "Professor Sharma")
+- student: first seeded roll number (e.g. `CS2024001`) / `student123`
+
+## 1b. Student Portal (Express, auth: student only)
+
+Student identity always comes from the JWT `sub` — never from a query param.
+
+| Method | Route | Response |
+|---|---|---|
+| GET | `/api/portal/me` | `{ id, rollNumber, name, email, phone, department, semester, photo, faceRegistered }` (never the password hash) |
+| GET | `/api/portal/attendance` | `{ percent, present, absent, total, history: [{ date, subject, status, time }] }` |
 
 ## 2. Students (Express, auth: admin or teacher; write ops: admin)
 
@@ -149,7 +165,9 @@ attendance history. Must be idempotent.
 
 ## Frontend pages (client implements ALL)
 
-`/login`, `/` (dashboard), `/attendance` (camera hero),
+`/login` (Staff / Student tabs), `/` (dashboard — staff only),
+`/portal` (student portal — role `student` only),
+`/attendance` (camera hero),
 `/students`, `/students/:id`, `/students/register-face` (admin),
 `/classes`, `/reports`, `/settings`.
 Redux slices: `auth`, `dashboard`, `students`, `attendance`, `notifications`.

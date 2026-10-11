@@ -1,6 +1,6 @@
 // Shared data shapes — mirrors ~/workspace/face-attendance/docs/CONTRACT.md
 
-export type Role = "admin" | "teacher";
+export type Role = "admin" | "teacher" | "student";
 
 export interface User {
   id: string;
@@ -41,6 +41,20 @@ export interface StudentStats {
   total: number;
   history: AttendanceEntry[];
 }
+
+export interface PortalProfile {
+  id: string;
+  rollNumber: string;
+  name: string;
+  email?: string;
+  phone?: string;
+  department: string;
+  semester: number;
+  photo?: string;
+  faceRegistered: boolean;
+}
+
+export interface PortalAttendance extends StudentStats {}
 
 export interface Teacher {
   id: string;

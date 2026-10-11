@@ -23,7 +23,7 @@ import { fetchStats } from "../store/slices/dashboardSlice";
 import { Avatar, Badge } from "./ui";
 import { cn } from "../utils/cn";
 
-const NAV = [
+const STAFF_NAV = [
   { to: "/", label: "Dashboard", icon: Home, end: true },
   { to: "/attendance", label: "Attendance", icon: Camera },
   { to: "/students", label: "Students", icon: Users },
@@ -32,10 +32,16 @@ const NAV = [
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 
+const STUDENT_NAV = [
+  { to: "/portal", label: "My Attendance", icon: GraduationCap, end: true },
+  { to: "/settings", label: "Settings", icon: SettingsIcon },
+];
+
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const { user } = useAppSelector((s) => s.auth);
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
+  const nav = user?.role === "student" ? STUDENT_NAV : STAFF_NAV;
 
   const handleLogout = async () => {
     await dispatch(logoutUser());
@@ -59,7 +65,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 
       {/* Nav */}
       <nav className="flex-1 space-y-1.5">
-        {NAV.map((item) => (
+        {nav.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
@@ -126,10 +132,12 @@ export default function Layout() {
   const [search, setSearch] = useState("");
   const bellRef = useRef<HTMLDivElement>(null);
   const profileRef = useRef<HTMLDivElement>(null);
+  const isStudent = user?.role === "student";
 
   useEffect(() => {
-    dispatch(fetchStats(undefined));
-  }, [dispatch]);
+    // Dashboard stats are staff-only; students would get 403.
+    if (!isStudent) dispatch(fetchStats(undefined));
+  }, [dispatch, isStudent]);
 
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
@@ -211,12 +219,14 @@ export default function Layout() {
             </button>
 
             <form onSubmit={submitSearch} className="hidden flex-1 sm:block">
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search students, classes…  (Enter)"
-                className="w-full max-w-md rounded-2xl border border-transparent bg-gray-100/80 px-4 py-2.5 text-sm text-gray-800 outline-none transition placeholder:text-gray-400 focus:border-brand-600 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 dark:bg-white/[0.05] dark:text-white dark:focus:bg-night-800"
-              />
+              {!isStudent && (
+                <input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search students, classes…  (Enter)"
+                  className="w-full max-w-md rounded-2xl border border-transparent bg-gray-100/80 px-4 py-2.5 text-sm text-gray-800 outline-none transition placeholder:text-gray-400 focus:border-brand-600 focus:bg-white focus:ring-4 focus:ring-indigo-500/10 dark:bg-white/[0.05] dark:text-white dark:focus:bg-night-800"
+                />
+              )}
             </form>
             <div className="flex-1 sm:hidden" />
 
@@ -239,7 +249,8 @@ export default function Layout() {
               </AnimatePresence>
             </button>
 
-            {/* Notifications */}
+            {/* Notifications (staff only — feed comes from dashboard stats) */}
+            {!isStudent && (
             <div ref={bellRef} className="relative">
               <button
                 onClick={() => setBellOpen((v) => !v)}
@@ -287,6 +298,7 @@ export default function Layout() {
                 )}
               </AnimatePresence>
             </div>
+            )}
 
             {/* Profile */}
             <div ref={profileRef} className="relative">

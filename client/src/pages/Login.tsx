@@ -18,16 +18,29 @@ export default function Login() {
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
   const { status, error } = useAppSelector((s) => s.auth);
+  const [tab, setTab] = useState<"staff" | "student">("staff");
   const [email, setEmail] = useState("sharma@college.edu");
   const [password, setPassword] = useState("teacher123");
+  const [identifier, setIdentifier] = useState("");
+  const [studentPassword, setStudentPassword] = useState("");
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const res = await dispatch(login({ email, password }));
+    const creds =
+      tab === "staff"
+        ? { email, password }
+        : { email: identifier, password: studentPassword };
+    const res = await dispatch(login(creds));
     if (login.fulfilled.match(res)) {
       dispatch(notify({ type: "success", title: `Welcome back, ${res.payload.name.split(" ")[0]}!`, message: "Signed in successfully." }));
-      navigate("/");
+      navigate(res.payload.role === "student" ? "/portal" : "/");
     }
+  };
+
+  const switchTab = (t: "staff" | "student") => {
+    setTab(t);
+    if (t === "student" && !identifier) setIdentifier("CS2024001");
+    if (t === "student" && !studentPassword) setStudentPassword("student123");
   };
 
   const loading = status === "loading";
@@ -102,27 +115,70 @@ export default function Login() {
             Sign in to your FaceTrack AI account
           </p>
 
-          <form onSubmit={submit} className="mt-8 space-y-5">
-            <Field label="Email address">
-              <Input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@college.edu"
-                required
-                autoComplete="email"
-              />
-            </Field>
-            <Field label="Password">
-              <Input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-                required
-                autoComplete="current-password"
-              />
-            </Field>
+          {/* Staff / Student tabs */}
+          <div className="mt-6 grid grid-cols-2 rounded-2xl bg-gray-100 p-1 dark:bg-white/[0.06]">
+            {(["staff", "student"] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => switchTab(t)}
+                className={`relative rounded-xl py-2.5 text-sm font-bold capitalize transition-colors ${
+                  tab === t ? "text-white" : "text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-white"
+                }`}
+              >
+                {tab === t && <motion.span layoutId="login-tab" className="grad-brand absolute inset-0 rounded-xl" />}
+                <span className="relative z-10">{t}</span>
+              </button>
+            ))}
+          </div>
+
+          <form onSubmit={submit} className="mt-6 space-y-5">
+            {tab === "staff" ? (
+              <>
+                <Field label="Email address">
+                  <Input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="you@college.edu"
+                    required
+                    autoComplete="email"
+                  />
+                </Field>
+                <Field label="Password">
+                  <Input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••••"
+                    required
+                    autoComplete="current-password"
+                  />
+                </Field>
+              </>
+            ) : (
+              <>
+                <Field label="Roll number or email">
+                  <Input
+                    value={identifier}
+                    onChange={(e) => setIdentifier(e.target.value)}
+                    placeholder="CS2024001"
+                    required
+                    autoComplete="username"
+                  />
+                </Field>
+                <Field label="Password">
+                  <Input
+                    type="password"
+                    value={studentPassword}
+                    onChange={(e) => setStudentPassword(e.target.value)}
+                    placeholder="••••••••"
+                    required
+                    autoComplete="current-password"
+                  />
+                </Field>
+              </>
+            )}
 
             {error && (
               <motion.p
@@ -146,6 +202,7 @@ export default function Login() {
             <div className="space-y-1.5 text-[13px] text-gray-500 dark:text-gray-400">
               <p><span className="font-semibold text-gray-700 dark:text-gray-200">Teacher:</span> sharma@college.edu · teacher123</p>
               <p><span className="font-semibold text-gray-700 dark:text-gray-200">Admin:</span> admin@college.edu · admin123</p>
+              <p><span className="font-semibold text-gray-700 dark:text-gray-200">Student:</span> CS2024001 · student123</p>
             </div>
           </div>
         </motion.div>

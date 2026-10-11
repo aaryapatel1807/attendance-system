@@ -1,4 +1,5 @@
 import { Router } from "express";
+import bcrypt from "bcryptjs";
 import { Student } from "../models/Student.js";
 import { Attendance } from "../models/Attendance.js";
 import { authRequired, requireRole } from "../middleware/auth.js";
@@ -74,7 +75,7 @@ router.get(
 );
 
 function validateStudentBody(body, partial = false) {
-  const { rollNumber, name, department, semester, email, phone } = body || {};
+  const { rollNumber, name, department, semester, email, phone, password } = body || {};
   if (!partial || rollNumber !== undefined) {
     if (!rollNumber || !String(rollNumber).trim()) throw httpError(400, "rollNumber is required");
   }
@@ -93,6 +94,9 @@ function validateStudentBody(body, partial = false) {
   }
   if (phone !== undefined && phone !== "" && !/^[+\d][\d\s-]{5,15}$/.test(String(phone))) {
     throw httpError(400, "phone format is invalid");
+  }
+  if (password !== undefined && password !== "" && String(password).length < 6) {
+    throw httpError(400, "password must be at least 6 characters");
   }
 }
 
@@ -113,6 +117,7 @@ router.post(
       semester: Number(req.body.semester),
       photo: req.body.photo || "",
       faceRegistered: Boolean(req.body.faceRegistered),
+      ...(req.body.password ? { password: await bcrypt.hash(String(req.body.password), 10) } : {}),
     });
     res.status(201).json(student.toJSON());
   })
@@ -180,6 +185,12 @@ router.put(
     if (body.semester !== undefined) body.semester = Number(body.semester);
     if (body.email !== undefined) body.email = String(body.email).trim();
     if (body.phone !== undefined) body.phone = String(body.phone).trim();
+    // Never store a raw portal password — hash it before the update.
+    if (body.password !== undefined && body.password !== "") {
+      body.password = await bcrypt.hash(String(body.password), 10);
+    } else {
+      delete body.password;
+    }
     if (body.rollNumber) {
       const clash = await Student.findOne({ rollNumber: body.rollNumber, _id: { $ne: req.params.id } });
       if (clash) throw httpError(409, "A student with this rollNumber already exists");
