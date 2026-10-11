@@ -56,6 +56,13 @@ export interface PortalProfile {
 
 export interface PortalAttendance extends StudentStats {}
 
+export interface VerifyFaceResult {
+  verified: boolean;
+  confidence?: number;
+  student?: { name: string; rollNumber: string; photo?: string };
+  reason?: "no_face" | "no_match" | "not_you";
+}
+
 export interface Teacher {
   id: string;
   name: string;

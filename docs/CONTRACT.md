@@ -48,6 +48,7 @@ Student identity always comes from the JWT `sub` — never from a query param.
 |---|---|---|
 | GET | `/api/portal/me` | `{ id, rollNumber, name, email, phone, department, semester, photo, faceRegistered }` (never the password hash) |
 | GET | `/api/portal/attendance` | `{ percent, present, absent, total, history: [{ date, subject, status, time }] }` |
+| POST | `/api/portal/verify-face` | body `{ image: "data-url" }` → `{ verified: true, confidence, student: { name, rollNumber, photo } }` when the top AI match is the logged-in student; otherwise `{ verified: false, reason }` with `reason` = `no_face` (no face detected), `no_match` (face matches nobody enrolled), or `not_you` (face matches a different student — no info about them is revealed). Verification only: never marks attendance. AI down → `502 { error: "AI service unavailable" }`. |
 
 ## 2. Students (Express, auth: admin or teacher; write ops: admin)
 

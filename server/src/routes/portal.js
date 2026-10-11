@@ -4,6 +4,7 @@ import { Attendance } from "../models/Attendance.js";
 import { authRequired, requireRole } from "../middleware/auth.js";
 import { asyncHandler, round1 } from "../utils/helpers.js";
 import { httpError } from "../middleware/errorHandler.js";
+import { callAi } from "../utils/ai.js";
 
 const router = Router();
 router.use(authRequired, requireRole("student"));
@@ -57,6 +58,49 @@ router.get(
         time: r.time,
       })),
     });
+  })
+);
+
+// POST /api/portal/verify-face  { image: "data-url" }
+// Face VERIFICATION for the logged-in student: "is this me?".
+// Never marks attendance. Never reveals any other student's data.
+// The AI service keys embeddings by rollNumber (see /api/face/register),
+// so the top match's `student_id` is compared against the student's own rollNumber.
+router.post(
+  "/verify-face",
+  asyncHandler(async (req, res) => {
+    const { image } = req.body || {};
+    if (!image || typeof image !== "string") throw httpError(400, "image data-URL is required");
+
+    const student = await selfStudent(req);
+
+    const result = await callAi("/recognize", { image });
+    const matches = Array.isArray(result.matches) ? result.matches : [];
+    const unknown = Array.isArray(result.unknown) ? result.unknown : [];
+
+    // No face detected at all
+    if (matches.length === 0 && unknown.length === 0) {
+      return res.json({ verified: false, reason: "no_face" });
+    }
+
+    const top = matches[0] || null;
+
+    // Face detected, but it matches nobody enrolled
+    if (!top || !top.student_id) {
+      return res.json({ verified: false, reason: "no_match" });
+    }
+
+    // Match found — is it the logged-in student?
+    if (top.student_id === student.rollNumber) {
+      return res.json({
+        verified: true,
+        confidence: top.confidence,
+        student: { name: student.name, rollNumber: student.rollNumber, photo: student.photo },
+      });
+    }
+
+    // Matches a DIFFERENT student — reveal nothing about them
+    return res.json({ verified: false, reason: "not_you" });
   })
 );
 
