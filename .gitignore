@@ -4,6 +4,6 @@ dist/
 __pycache__/
 *.pyc
 encodings.db
-models/
+ai-service/models/
 .env
 .DS_Store
